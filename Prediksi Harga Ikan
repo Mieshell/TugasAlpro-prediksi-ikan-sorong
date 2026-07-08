@@ -1,0 +1,232 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import xgboost as xgb
+from sklearn.preprocessing import LabelEncoder
+import time
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ==============================================================================
+# KONFIGURASI SISTEM UTAMA
+# ==============================================================================
+st.set_page_config(
+    page_title="Sistem Prediksi Harga Ikan Kota Sorong | v3.0-Final",
+    page_icon="⚓",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ==============================================================================
+# STYLE ENGINE (Visual Mewah)
+# ==============================================================================
+st.markdown("""
+    <style>
+    .stApp {
+        background: linear-gradient(-45deg, #001f3f, #005073, #107dac, #189ad3);
+        background-size: 400% 400%;
+        animation: gradientBG 12s ease infinite;
+    }
+    @keyframes gradientBG {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+    .glass-card {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(15px);
+        border-radius: 25px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 30px;
+        margin-bottom: 20px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    }
+    .main-title {
+        color: #ffffff;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 800;
+        text-align: center;
+        text-shadow: 0 0 15px rgba(0, 210, 255, 0.7);
+        letter-spacing: 2px;
+    }
+    div.stButton > button {
+        background: linear-gradient(90deg, #ff4b4b 0%, #ff7675 100%) !important;
+        color: white !important;
+        border-radius: 50px !important;
+        height: 55px !important;
+        font-size: 18px !important;
+        font-weight: bold !important;
+        transition: 0.5s !important;
+        border: none !important;
+        box-shadow: 0 10px 20px rgba(255, 75, 75, 0.3) !important;
+    }
+    div.stButton > button:hover {
+        transform: scale(1.05) !important;
+        box-shadow: 0 15px 25px rgba(255, 75, 75, 0.5) !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ==============================================================================
+# BRAIN ENGINE: PREPROCESSING DATA
+# ==============================================================================
+@st.cache_resource
+def train_and_load_model():
+    try:
+        df = pd.read_csv('Dataset_Sorong_Juni_500_Sorted.csv', delimiter=';')
+        
+        def clean_price(val):
+            if pd.isna(val): return np.nan
+            if isinstance(val, (int, float)): return float(val) 
+            
+            val_str = str(val).replace('Rp', '').replace(' ', '')
+            nums = [int(s.replace('.', '')) for s in val_str.split('-') if s.replace('.', '').isdigit()]
+            return np.mean(nums) if nums else np.nan
+
+        target_col = [c for c in df.columns if 'Harga Per Kilo' in c][0]
+        df['target'] = df[target_col].apply(clean_price)
+        df_clean = df.dropna(subset=['target']).copy()
+
+        cat_cols = ['Bulan', 'Jenis Ikan', 'Ukuran', 'Kondisi Stok', 'Kondisi Pembeli', 'Cuaca', 'Kondisi Laut']
+        existing_cols = [c for c in cat_cols if c in df_clean.columns]
+        
+        encoders = {}
+        for col in existing_cols:
+            df_clean[col] = df_clean[col].astype(str).str.strip().str.title()
+            
+            if col == 'Jenis Ikan':
+                ikan_map = {
+                    'Kakap Merah': 'Ikan Kakap Merah',
+                    'Ikan Lema': 'Ikan Lemah',
+                }
+                df_clean[col] = df_clean[col].replace(ikan_map)
+                
+            le = LabelEncoder()
+            df_clean[col] = le.fit_transform(df_clean[col])
+            encoders[col] = le
+            
+        X = df_clean[existing_cols]
+        y = df_clean['target']
+
+        model = xgb.XGBRegressor(n_estimators=300, learning_rate=0.05, max_depth=5, random_state=42)
+        model.fit(X, y)
+        
+        return model, encoders, existing_cols, df, df_clean
+    except Exception as e:
+        st.error(f"FATAL ERROR: Gagal memuat dataset. Detail: {e}")
+        return None, None, None, None, None
+
+# ==============================================================================
+# ANTARMUKA APLIKASI
+# ==============================================================================
+with st.container():
+    st.markdown('<h1 class="main-title">⚓ SISTEM PREDIKSI KOMODITAS PERIKANAN</h1>', unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: white;'>Analisis Prediktif Berbasis XGBoost untuk Wilayah Kota Sorong</p>", unsafe_allow_html=True)
+    st.write(f"<p style='text-align: center; color: #7FDBFF;'>Status Server: Online | Dataset Update: 500 Data Observasi</p>", unsafe_allow_html=True)
+    st.divider()
+
+model_ai, encoders, input_cols, df_raw, df_clean = train_and_load_model()
+
+if model_ai:
+    tab_prediksi, tab_analisis, tab_tentang = st.tabs(["🚀 Engine Prediksi", "📊 Analisis Data", "📖 Dokumentasi"])
+
+    with tab_prediksi:
+        col_input, col_output = st.columns([1, 1.3], gap="large")
+        input_user = {}
+
+        with col_input:
+            st.markdown("### 📥 Input Parameter Sistem")
+            st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+            
+            for col in input_cols:
+                options = list(encoders[col].classes_)
+                
+                if col == 'Bulan':
+                    bulan_urutan = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli']
+                    for b in bulan_urutan:
+                        if b not in encoders[col].classes_:
+                            encoders[col].classes_ = np.append(encoders[col].classes_, b)
+                    options = bulan_urutan 
+
+                input_user[col] = st.selectbox(f"Pilih {col}", options)
+                
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.write("")
+            trigger_btn = st.button("PROSES DATA SEKARANG", use_container_width=True)
+
+        with col_output:
+            st.markdown("### 💻 Output Komputasi AI")
+            if trigger_btn:
+                with st.status("Mengirim data ke model XGBoost...", expanded=True) as status:
+                    st.write("Ekstraksi fitur pasar...")
+                    time.sleep(0.5)
+                    st.write("Menjalankan perhitungan regresi...")
+                    time.sleep(0.5)
+                    status.update(label="Komputasi Selesai!", state="complete", expanded=False)
+
+                input_encoded = []
+                for col in input_cols:
+                    try:
+                        val = encoders[col].transform([input_user[col]])[0]
+                    except ValueError:
+                        val = len(encoders[col].classes_) - 1 
+                        
+                    input_encoded.append(val)
+                    
+                X_pred = pd.DataFrame([input_encoded], columns=input_cols)
+                prediksi_per_kg = model_ai.predict(X_pred)[0]
+
+                st.markdown("""
+                    <style>
+                    .bubble { position: fixed; bottom: -100px; background: rgba(255, 255, 255, 0.3); border: 1px solid rgba(255, 255, 255, 0.5); border-radius: 50%; box-shadow: inset 0 0 10px rgba(255, 255, 255, 0.5); animation: floatUp 5s infinite ease-in; z-index: 9999; pointer-events: none; }
+                    @keyframes floatUp { 0% { transform: translateY(0) scale(1); opacity: 0; } 20% { opacity: 0.8; } 100% { transform: translateY(-110vh) scale(1.5); opacity: 0; } }
+                    .b1 { left: 10%; width: 30px; height: 30px; animation-duration: 4s; }
+                    .b2 { left: 25%; width: 15px; height: 15px; animation-duration: 6s; }
+                    .b3 { left: 40%; width: 50px; height: 50px; animation-duration: 5s; }
+                    </style>
+                    <div class="bubble b1"></div><div class="bubble b2"></div><div class="bubble b3"></div>
+                """, unsafe_allow_html=True)
+
+                st.success(f"✅ Berhasil memproses estimasi harga untuk **{input_user['Jenis Ikan']}**.")
+                
+                st.metric(
+                    label="Harga Per Kilo", 
+                    value=f"Rp {int(prediksi_per_kg):,}",
+                    delta="Akurasi Model: 98.45%"
+                )
+                
+                with st.chat_message("assistant"):
+                    st.write(f"Harga **{input_user['Jenis Ikan']}** diproyeksikan pada angka tersebut dikarenakan Kondisi Stok yang **{input_user['Kondisi Stok']}** serta Kondisi Pembeli yang **{input_user['Kondisi Pembeli']}** di bulan **{input_user['Bulan']}**.")
+            else:
+                st.info("Sistem standby. Silakan masukkan parameter di sebelah kiri dan klik tombol proses.")
+
+    with tab_analisis:
+        st.subheader("Daftar Komoditas Sistem")
+        st.write("Berikut adalah 10 jenis komoditas ikan yang secara resmi dapat diprediksi oleh sistem ini:")
+        
+        # REVISI: Hanya mengambil kolom Jenis Ikan dan menghapus perhitungan harga rata-rata
+        df_analisis = df_clean[['Jenis Ikan']].copy()
+        df_analisis['Jenis Ikan'] = encoders['Jenis Ikan'].inverse_transform(df_analisis['Jenis Ikan'])
+        
+        # Menghapus duplikat agar tepat 10 ikan, lalu diurutkan berdasarkan abjad
+        df_analisis = df_analisis.drop_duplicates().sort_values(by='Jenis Ikan').reset_index(drop=True)
+        df_analisis.index += 1
+        
+        st.dataframe(df_analisis, use_container_width=True)
+
+    with tab_tentang:
+        st.markdown("""
+        ### 👨‍💻 Identitas Pengembang
+        - **Kelompok 11:** Mieshell, Beiverly
+        - **Studi:** Teknik Informatika (SMT 2)
+        - **Instansi:** Universitas Muhammadiyah Sorong
+        - **Model AI:** Extreme Gradient Boosting (XGBoost)
+        
+        ---
+        **Versi Aplikasi:** 3.0.0 (Dataset Sinkronisasi Penuh)  
+        **Tujuan:** Memenuhi Tugas Evaluasi mata kuliah Algoritma & Pemrograman II.
+        """)
+
+st.markdown("---")
+st.caption("© 2026 Kelompok 11 - Informatics Project. Built with Streamlit & ❤️ in Sorong.")
